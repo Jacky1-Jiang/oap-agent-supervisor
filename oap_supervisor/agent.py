@@ -1,10 +1,12 @@
 import os
+import boto3
 from langgraph.pregel.remote import RemoteGraph
 from langgraph_supervisor import create_supervisor
 from pydantic import BaseModel, Field
 from typing import List, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain.chat_models import init_chat_model
+from langchain_aws import ChatBedrockConverse
 
 # This system prompt is ALWAYS included at the bottom of the message.
 UNEDITABLE_SYSTEM_PROMPT = """\nYou can invoke sub-agents by calling tools in this format:
@@ -47,12 +49,24 @@ class GraphConfigPydantic(BaseModel):
         },
     )
     supervisor_model: str = Field(
-        default="openai:gpt-4.1",
+        default="bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0",
         metadata={
             "x_oap_ui_config": {
                 "type": "select",
                 "placeholder": "Select the model to use for the supervisor.",
                 "options": [
+                    {
+                        "label": "AWS Bedrock Claude 3.5 Sonnet",
+                        "value": "bedrock:anthropic.claude-3-5-sonnet-20241022-v2:0",
+                    },
+                    {
+                        "label": "AWS Bedrock Claude 3.5 Haiku",
+                        "value": "bedrock:anthropic.claude-3-5-haiku-20241022-v1:0",
+                    },
+                    {
+                        "label": "AWS Bedrock Claude 3 Sonnet",
+                        "value": "bedrock:anthropic.claude-3-sonnet-20240229-v1:0",
+                    },
                     {
                         "label": "Claude Sonnet 4",
                         "value": "anthropic:claude-sonnet-4-0",
@@ -178,7 +192,8 @@ def get_api_key_for_model(model_name: str, config: RunnableConfig):
     model_to_key = {
         "openai:": "OPENAI_API_KEY",
         "anthropic:": "ANTHROPIC_API_KEY", 
-        "google": "GOOGLE_API_KEY"
+        "google": "GOOGLE_API_KEY",
+        "bedrock:": "AWS_ACCESS_KEY_ID"
     }
     key_name = next((key for prefix, key in model_to_key.items() 
                     if model_name.startswith(prefix)), None)
@@ -191,12 +206,32 @@ def get_api_key_for_model(model_name: str, config: RunnableConfig):
     return os.getenv(key_name)
 
 
-def make_model(cfg: GraphConfigPydantic, model_api_key: str):
+async def make_model(cfg: GraphConfigPydantic, model_api_key: str):
     """Instantiate the LLM for the supervisor based on the config."""
-    return init_chat_model(
-        model=cfg.supervisor_model,
-        api_key=model_api_key
-    )
+    if cfg.supervisor_model.lower().startswith("bedrock:"):
+        # Extract model name for Bedrock
+        import asyncio
+        bedrock_model_name = cfg.supervisor_model.split(":", 1)[1]
+        
+        # Create Bedrock client using asyncio.to_thread to avoid blocking
+        bedrock_client = await asyncio.to_thread(
+            boto3.client,
+            "bedrock-runtime", 
+            region_name=os.getenv("AWS_DEFAULT_REGION", "us-west-2"),
+            aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+            aws_session_token=os.getenv("AWS_SESSION_TOKEN")  # Optional
+        )
+        
+        return ChatBedrockConverse(
+            model=bedrock_model_name,
+            client=bedrock_client,
+        )
+    else:
+        return init_chat_model(
+            model=cfg.supervisor_model,
+            api_key=model_api_key
+        )
 
 
 def make_prompt(cfg: GraphConfigPydantic):
@@ -204,7 +239,7 @@ def make_prompt(cfg: GraphConfigPydantic):
     return cfg.system_prompt + UNEDITABLE_SYSTEM_PROMPT
 
 
-def graph(config: RunnableConfig):
+async def graph(config: RunnableConfig):
     cfg = GraphConfigPydantic(**config.get("configurable", {}))
     supabase_access_token = config.get("configurable", {}).get(
         "x-supabase-access-token"
@@ -216,9 +251,12 @@ def graph(config: RunnableConfig):
     # Get the API key from the RunnableConfig or from the environment variable
     model_api_key = get_api_key_for_model(cfg.supervisor_model, config) or "No token found"
 
+    # Await the async make_model function
+    model = await make_model(cfg, model_api_key)
+
     return create_supervisor(
         child_graphs,
-        model=make_model(cfg, model_api_key),
+        model=model,
         prompt=make_prompt(cfg),
         config_schema=GraphConfigPydantic,
         handoff_tool_prefix="delegate_to_",
