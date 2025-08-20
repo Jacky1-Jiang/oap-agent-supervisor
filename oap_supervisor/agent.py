@@ -7,6 +7,7 @@ from typing import List, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain.chat_models import init_chat_model
 from langchain_aws import ChatBedrockConverse
+from .security.auth import current_access_token
 
 # This system prompt is ALWAYS included at the bottom of the message.
 UNEDITABLE_SYSTEM_PROMPT = """\nYou can invoke sub-agents by calling tools in this format:
@@ -168,13 +169,15 @@ def make_child_graphs(cfg: GraphConfigPydantic, access_token: Optional[str] = No
     if not cfg.agents:
         return []
 
-    # If access_token is None, create headers without token
-    headers = {}
-    if access_token:
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "x-supabase-access-token": access_token,
-        }
+    # Check if access_token is provided and valid
+    if not access_token:
+        print("Warning: No access token provided for child graphs. Remote agents may fail without authentication.")
+        return []
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "x-supabase-access-token": access_token,
+    }
 
     def create_remote_graph_wrapper(agent: AgentsConfig):
         return OAPRemoteGraph(
@@ -241,8 +244,10 @@ def make_prompt(cfg: GraphConfigPydantic):
 
 async def graph(config: RunnableConfig):
     cfg = GraphConfigPydantic(**config.get("configurable", {}))
-    supabase_access_token = config.get("configurable", {}).get(
-        "x-supabase-access-token"
+    # Try to get token from config first, then from context variable
+    supabase_access_token = (
+        config.get("configurable", {}).get("x-supabase-access-token")
+        or current_access_token.get()
     )
 
     # Pass the token to make_child_graphs, which now handles None values
