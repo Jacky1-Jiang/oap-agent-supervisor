@@ -1,9 +1,13 @@
 import os
 import asyncio
+from contextvars import ContextVar
 from langgraph_sdk import Auth
 from langgraph_sdk.auth.types import StudioUser
 from supabase import create_client, Client
 from typing import Optional, Any
+
+# Context variable to store the current access token
+current_access_token: ContextVar[Optional[str]] = ContextVar('current_access_token', default=None)
 
 supabase_url = os.environ.get("SUPABASE_URL")
 supabase_key = os.environ.get("SUPABASE_KEY")
@@ -36,6 +40,9 @@ async def get_current_user(authorization: str | None) -> Auth.types.MinimalUserD
         raise Auth.exceptions.HTTPException(
             status_code=401, detail="Invalid authorization header format"
         )
+    
+    # Store the token in the context variable for later use
+    current_access_token.set(token)
 
     # Ensure Supabase client is initialized
     if not supabase:
@@ -154,3 +161,5 @@ async def authorize_store(ctx: Auth.types.AuthContext, value: dict):
     # The "namespace" field for each store item is a tuple you can think of as the directory of an item.
     namespace: tuple = value["namespace"]
     assert namespace[0] == ctx.user.identity, "Not authorized"
+
+
