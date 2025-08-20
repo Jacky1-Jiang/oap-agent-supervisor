@@ -7,7 +7,7 @@ from typing import List, Optional
 from langchain_core.runnables import RunnableConfig
 from langchain.chat_models import init_chat_model
 from langchain_aws import ChatBedrockConverse
-from .security.auth import current_access_token
+from oap_supervisor.security.auth import current_access_token
 
 # This system prompt is ALWAYS included at the bottom of the message.
 UNEDITABLE_SYSTEM_PROMPT = """\nYou can invoke sub-agents by calling tools in this format:
